@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "WAB Ext",
+  "version": "1.0",
+  "description": "WhatsApp Web automation extension with smart update checking and storage management",
+  "permissions": ["activeTab", "storage", "scripting", "alarms"],
+  "host_permissions": ["https://web.whatsapp.com/*"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+W"
+      },
+      "description": "Open the WhatsApp extension popup"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["utils.js", "whatsapp.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "wab-ext@local.dev",
+      "strict_min_version": "109.0"
+    }
+  }
+}
