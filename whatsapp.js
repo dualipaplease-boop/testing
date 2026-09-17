@@ -136,17 +136,26 @@ async function openWhatsAppChat(phoneNumber) {
         'button span[data-icon="new-chat-outline"]'
     ];
 
-    const newChatElement = await waitForElement(newChatSelectors, 5000);
-    const actualButton = newChatElement?.closest('button') || newChatElement;
+    // Try once, then retry if not found
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const newChatElement = await waitForElement(newChatSelectors, 15000);
+        const actualButton = newChatElement?.closest('button') || newChatElement;
 
-    if (!actualButton) {
-        logError('New chat button not found.', 'Missing button');
-        return false;
+        if (actualButton) {
+            await waitRandomDelay(20_000, 30_000);
+            actualButton.click();
+            appendLog('Clicked new chat button');
+            return true;
+        }
+
+        if (attempt === 0) {
+            appendLog('New chat button not found, retrying...');
+            await waitRandomDelay(5000, 10000);
+        } else {
+            logError('New chat button not found after retry.', 'Missing button');
+            return false;
+        }
     }
-
-    await waitRandomDelay(20_000, 30_000);
-    actualButton.click();
-    appendLog('Clicked new chat button');
 
     // Combined selectors for search input from both scripts
     const searchSelectors = [
@@ -401,6 +410,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             appendLog(`Sending single message response: success=${result.success}`);
             sendResponse(result);
         });
+        return true;
+    }
+    
+    if (request.action === 'INJECT_STATUS_ANNOUNCERS') {
+        // Status announcers already initialized on script load,
+        // but acknowledge the re-injection signal
+        appendLog('Status announcers re-initialized via message');
         return true;
     }
     

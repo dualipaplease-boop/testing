@@ -181,6 +181,39 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 /**
+ * Attempt to re-inject whatsapp.js content script into the active tab.
+ * Returns true if injection was successful (tab needs reload/retry).
+ */
+async function attemptContentScriptReInjection() {
+    try {
+        const api = typeof browser !== 'undefined' ? browser : chrome;
+        const tabs = await api.tabs.query({ active: true, currentWindow: true });
+        const tab = tabs && tabs[0];
+        
+        if (!tab?.url?.includes('web.whatsapp.com')) return false;
+        
+        // Inject utility and content scripts into the tab
+        await api.tabs.executeScript(tab.id, {
+            file: 'utils.js'
+        });
+        
+        await api.tabs.executeScript(tab.id, {
+            file: 'whatsapp.js'
+        });
+        
+        // Send a message to the re-injected content script to initialize
+        await api.tabs.sendMessage(tab.id, {
+            action: 'INJECT_STATUS_ANNOUNCERS'
+        });
+        
+        return true;
+    } catch (err) {
+        console.error('Content script re-injection error:', err);
+        return false;
+    }
+}
+
+/**
  * Shared screen reader announcement utility.
  * Creates a live region announcement in a consistent way across the extension.
  * 
@@ -326,9 +359,23 @@ async function sendMessageFromPopup() {
         // 'Receiving end does not exist' means whatsapp.js is not injected.
         // This happens when WhatsApp Web was open BEFORE the extension was
         // loaded/reloaded. Content scripts only inject into tabs opened after
-        // the extension is active. Refreshing WhatsApp Web fixes it.
+        // the extension is active. Attempt re-injection first.
         const isNotInjected = error.message?.includes('Receiving end does not exist') ||
                               error.message?.includes('Could not establish connection');
+        
+        if (isNotInjected) {
+            // Attempt to re-inject content script into active tab
+            attemptContentScriptReInjection().then((success) => {
+                if (success) {
+                    updateStatus('Content script re-injected. Retrying...', 'blue');
+                    setTimeout(() => {
+                        sendMessageFromPopup();
+                    }, 500);
+                    return;
+                }
+            }).catch(err => console.error('Re-injection failed:', err));
+        }
+        
         const errMsg = isNotInjected
             ? 'Content script not found. Please refresh the WhatsApp Web tab and try again.'
             : 'Could not connect to WhatsApp tab. Refresh WhatsApp and try again.';

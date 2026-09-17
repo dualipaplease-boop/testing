@@ -144,7 +144,7 @@ function waitRandomDelay(minDelay = 20_000, maxDelay = 30_000) {
     return new Promise((resolve) => setTimeout(resolve, delay));
 }
 
-function waitForElement(selectors, timeout = 5000) {
+function waitForElement(selectors, timeout = 15000) {
     const selectorString = Array.isArray(selectors) ? selectors.join(', ') : selectors;
 
     return new Promise((resolve) => {
