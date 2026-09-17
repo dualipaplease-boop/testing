@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "WAB Ext",
+  "version": "1.0",
+  "description": "WhatsApp Web automation extension for accessibility",
+  "permissions": ["activeTab", "storage"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+W"
+      },
+      "description": "Open the WhatsApp extension popup"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["utils.js", "whatsapp.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "wab-ext@local.dev",
+      "strict_min_version": "109.0"
+    }
+  }
+}

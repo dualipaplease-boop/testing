@@ -1,0 +1,72 @@
+body {
+    width: 280px;
+    padding: 15px;
+    font-family: sans-serif;
+    box-sizing: border-box;
+    margin: 0;
+}
+
+h1 {
+    font-size: 16px;
+    margin: 0;
+    display: inline-block;
+    width: calc(100% - 65px);
+    vertical-align: middle;
+}
+
+label {
+    display: block;
+    margin-top: 10px;
+    font-weight: bold;
+}
+
+input,
+textarea {
+    width: 100%;
+    margin-top: 5px;
+    padding: 8px;
+    box-sizing: border-box;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+button {
+    background-color: #25D366;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-weight: bold;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+button:hover {
+    background-color: #128C7E;
+}
+
+
+/* Send Button */
+
+.send-button {
+    width: 100%;
+    margin-top: 15px;
+    padding: 12px;
+}
+
+
+/* Close Button Override */
+
+.close-button {
+    width: 55px;
+    padding: 6px 0;
+    margin-top: 0;
+    font-size: 13px;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+#status {
+    margin-top: 15px;
+    font-size: 14px;
+    text-align: center;
+}

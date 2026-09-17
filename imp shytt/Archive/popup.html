@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>WAB Ext</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <!-- Main landmark for screen readers -->
+    <main role="main">
+
+        <!-- Header container for layout and accessibility -->
+        <div class="header-container">
+            <h1 id="popup-title">Send WhatsApp Message</h1>
+            <!-- Accessible Close Button with explicit label -->
+            <button type="button" id="closeBtn" class="close-button" aria-label="Close extension popup">Close</button>
+        </div>
+
+        <!-- Phone input group -->
+        <label for="phone" id="phone-label">Phone Numbers</label>
+        <input type="text" id="phone" value="9495342265" placeholder="e.g., 9495342265, 918888888888" aria-labelledby="phone-label" aria-describedby="phone-instructions" aria-required="true" required>
+        <!-- Accessible hidden instructions read aloud by screen readers when focusing phone field -->
+        <p id="phone-instructions" class="sr-only">Separate multiple phone numbers with commas.</p>
+
+        <!-- Message input group -->
+        <label for="message" id="message-label">Message:</label>
+        <textarea id="message" rows="4" placeholder="Type your message here..." aria-labelledby="message-label" aria-required="true" required>hello</textarea>
+
+        <!-- Action button -->
+        <button id="sendBtn" class="send-button" type="button" aria-label="Send WhatsApp Message">Send Message</button>
+
+<!-- The live region MUST be present on load and strictly empty -->
+<div id="status-announcer" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></div>
+
+    </main>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
