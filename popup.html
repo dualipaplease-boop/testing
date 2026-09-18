@@ -39,6 +39,9 @@
         <!-- Action button -->
         <button id="sendBtn" class="send-button" type="button" aria-label="Send WhatsApp Message">Send Message</button>
 
+        <!-- Visible status area for sighted users -->
+        <div id="status" aria-hidden="true"></div>
+
         <!-- The status announcer MUST be present on load and strictly empty -->
         <!-- This region is for general visual status updates (screen reader uses content script) -->
         <div id="status-announcer" role="status" aria-live="polite" aria-atomic="true" tabindex="-1" class="sr-only"></div>

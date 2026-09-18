@@ -69,6 +69,14 @@ function announceStatus(state) {
         region.index++;
     }, 100);
     lastAnnouncedMessage = message;
+
+    // Also update the visible #status element for sighted users
+    const visibleStatus = document.getElementById('status');
+    if (visibleStatus) {
+        visibleStatus.textContent = message;
+        visibleStatus.style.color = color;
+    }
+
     console.log(`[Status Update] ${message} (${color})`);
 }
 
@@ -409,6 +417,12 @@ chrome.runtime.onMessage.addListener((request) => {
                 announcerEl.textContent = request.message;
                 region.index++;
             }, 100);
+        }
+
+        // Also update the visible #status element for sighted users
+        const visibleStatus = document.getElementById('status');
+        if (visibleStatus) {
+            visibleStatus.textContent = request.message;
         }
     }
 });
