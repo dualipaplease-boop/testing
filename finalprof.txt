@@ -1,0 +1,453 @@
+Viewed manifest.json:1-39
+Viewed popup.html:1-60
+Viewed popup.js:1-433
+Viewed whatsapp.js:1-437
+Viewed utils.js:1-285
+Viewed popup.css:1-87
+
+# 1. Executive Summary
+
+This report presents a complete professional audit and development analysis of the **WAB Ext** browser extension. The assessment is based strictly on an empirical code inspection of the existing codebase (`manifest.json`, `popup.html`, `popup.js`, `popup.css`, `whatsapp.js`, `utils.js`, `background.js`).
+
+### Core Status Overview
+- **Functional Readiness**: The extension contains a working end-to-end automation flow for opening WhatsApp Web chats, populating inputs, and sending messages to single or small batches of phone numbers.
+- **Accessibility Integration**: The codebase includes an advanced screen-reader accessibility architecture utilizing dual alternating `aria-live` regions (`polite` and `assertive`), custom focus management, and cross-window status mirroring for Orca (Linux) and NVDA.
+- **Engineering Quality**: While functionally operational for basic use cases, the implementation exhibits significant engineering vulnerabilities: hardcoded DOM selectors susceptible to breaking on WhatsApp Web updates, excessive fixed delays (`waitRandomDelay` enforcing 20–30s sleeps per step), plain-text PII logging to local storage, unmanaged batch concurrency, lack of structured error types, and flat architectural file organization.
+
+---
+
+# 2. Current Architecture
+
+## End-to-End System Architecture
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 POPUP LAYER (popup.js)                                 │
+│  - User Input (Phone numbers, Message)                                                 │
+│  - Update Check on Load (via chrome.storage.local)                                     │
+│  - Focus Management (Phone field auto-focus)                                           │
+│  - Alternating Live Regions (#status-announcer, #status-announcer-2)                   │
+└───────────────────────────────┬────────────────────────────────────────────────────────┘
+                                │ 1. PING Handshake / Dynamic Script Injection
+                                │ 2. SEND_MESSAGE_BATCH (chrome.tabs.sendMessage)
+                                ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                             CONTENT SCRIPT LAYER (whatsapp.js)                          │
+│  - Receives SEND_MESSAGE_BATCH                                                         │
+│  - Orchestrates DOM Automation Loop (New Chat ➔ Search ➔ Compose ➔ Send)               │
+│  - Dual Live Regions (#wab-ext-status-announcer, #wab-ext-status-announcer-2)          │
+│  - Status Mirroring (chrome.runtime.sendMessage -> WAB_STATUS_UPDATE)                  │
+└───────────────────────────────┬────────────────────────────────────────────────────────┘
+                                │ Interacts with DOM
+                                ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                  WHATSAPP WEB DOM                                      │
+│  - button[aria-label="New chat"]                                                       │
+│  - input[aria-label*="Search"] / div[contenteditable="true"]                           │
+│  - div[data-testid="conversation-compose-box-input"]                                   │
+│  - button[aria-label="Send"]                                                           │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+                                ▲
+┌───────────────────────────────┴────────────────────────────────────────────────────────┐
+│                             BACKGROUND LAYER (background.js)                           │
+│  - Service Worker (Manifest V3)                                                        │
+│  - Alarm Handler: Storage Cleanup (storageCleanup - every 24h)                          │
+│  - Storage Update Handler (wab_ext_update_status)                                     │
+│  - Runtime Message Listeners (GET_UPDATE_STATUS, GET_STORAGE_INFO, CLEAR_OLD_LOGS)    │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Architectural Ownership & Flow Analysis
+1. **Responsibilities**:
+   - [popup.js](file:///home/karan/Desktop/zen/wab_ext/tmp/newshytt1/files/popup.js): Primary UI controller, input parser, update status checker, and tab injection orchestrator.
+   - [whatsapp.js](file:///home/karan/Desktop/zen/wab_ext/tmp/newshytt1/files/whatsapp.js): Execution engine for WhatsApp Web DOM manipulation, batch state iteration, and content-level screen reader announcements.
+   - [utils.js](file:///home/karan/Desktop/zen/wab_ext/tmp/newshytt1/files/utils.js): Utility library containing logging, delay generation, DOM observers, React state manipulation helpers, and storage management functions. Shared across popup and content script contexts.
+   - [background.js](file:///home/karan/Desktop/zen/wab_ext/tmp/newshytt1/files/background.js): Background service worker managing periodic alarms (`storageCleanup`), update status storage, and responding to telemetry message requests.
+2. **Identified Anti-Patterns**:
+   - **Popup-Driven Automation Execution**: The popup directly commands the content script and waits synchronously for batch completion via `sendMessage`. If the popup closes, batch completion callbacks cannot reach `popup.js`, breaking UI status updates.
+   - **Passive Service Worker**: `background.js` does not mediate or track batch operations. State is not saved in a central service worker state machine.
+   - **Duplicated Screen Reader Functions**: Both `utils.js` (`notifySreenReader` creating transient DOM elements) and `popup.js` (`notifySreenReader` using static alternating regions) contain separate, conflicting implementations.
+
+---
+
+# 3. File-by-File Analysis
+
+### 1. [manifest.json](file:///home/karan/Desktop/zen/wab_ext/tmp/newshytt1/files/manifest.json)
+- **Purpose**: Defines Manifest V3 metadata, permissions, content script bindings, background service worker, and browser-specific settings.
+- **Confirmed Attributes**:
+  - `manifest_version`: 3
+  - `permissions`: `["activeTab", "storage", "scripting", "alarms"]`
+  - `host_permissions`: `["https://web.whatsapp.com/*"]`
+  - `background`: `{"service_worker": "background.js"}`
+  - `browser_specific_settings.gecko`: Includes extension ID `wab-ext@local.dev` and `strict_min_version: "109.0"`.
+- **Architectural Findings**: Properly scoped permissions. No unnecessary permission request detected.
+
+### 2. [popup.html](file:///home/karan/Desktop/zen/wab_ext/tmp/newshytt1/files/popup.html)
+- **Purpose**: Structure for the extension popup UI.
+- **Confirmed Attributes**:
+  - Semantic structure `<main role="main">`.
+  - Accessible inputs `<input id="phone">` with `aria-describedby="phone-instructions"` and `<textarea id="message">`.
+  - Two assertive live regions (`#update-announcer`, `#update-announcer-2`) and two polite live regions (`#status-announcer`, `#status-announcer-2`) with `.sr-only` CSS styling.
+- **Architectural Findings**: Excellent accessible HTML structure; avoids `display:none` on screen-reader live regions.
+
+### 3. [popup.js](file:///home/karan/Desktop/zen/wab_ext/tmp/newshytt1/files/popup.js)
+- **Purpose**: Event handling, phone number parsing, tab scripting injection, status presentation, and messaging.
+- **Confirmed Attributes**:
+  - Implements `ensureContentScriptInjected` via `chrome.scripting.executeScript`.
+  - Performs `PING` readiness handshake before dispatching `SEND_MESSAGE_BATCH`.
+  - Implements alternating region index flipping for re-announcing status text to AT.
+  - Listens to `WAB_STATUS_UPDATE` from content script to mirror messages when popup has window focus.
+- **Architectural Findings**: Tight coupling between popup UI lifetime and long-running batch operations.
+
+### 4. [popup.css](file:///home/karan/Desktop/zen/wab_ext/tmp/newshytt1/files/popup.css)
+- **Purpose**: Styling rules for popup interface and accessible visually-hidden elements.
+- **Confirmed Attributes**:
+  - Uses standard `.sr-only` clip technique (`position: absolute; width: 1px; height: 1px; clip: rect(0 0 0 0)`).
+  - Compact popup styling (`width: 280px; padding: 15px`).
+- **Architectural Findings**: Clean, non-intrusive layout rules.
+
+### 5. [whatsapp.js](file:///home/karan/Desktop/zen/wab_ext/tmp/newshytt1/files/whatsapp.js)
+- **Purpose**: WhatsApp Web DOM interaction engine.
+- **Confirmed Attributes**:
+  - `openWhatsAppChat`: Clicks "New chat" button and sets phone number in search box.
+  - `writeMessage`: Locates Lexical/React contenteditable compose box and inserts message.
+  - `sendMessage`: Clicks Send button or falls back to `KeyboardEvent('Enter')`.
+  - `ensureStatusAnnouncers`: Creates dynamic live regions in WhatsApp Web DOM.
+- **Architectural Findings**: Heavy reliance on fixed delays (`waitRandomDelay` enforcing 20s–30s per step) and complex array-based CSS selector fallback lists.
+
+### 6. [utils.js](file:///home/karan/Desktop/zen/wab_ext/tmp/newshytt1/files/utils.js)
+- **Purpose**: Shared helper methods.
+- **Confirmed Attributes**:
+  - `appendLog`: Appends log strings to `chrome.storage.local` key `wab_ext_logs`.
+  - `waitForElement`: Uses `MutationObserver` on `document.body` with configurable timeout.
+  - `changeReactInputState`: Sets value via `HTMLInputElement.prototype` descriptor and dispatches `input`/`change` events.
+  - `waitRandomDelay`: Standard `Math.random()` timeout wrapper.
+- **Architectural Findings**: Unbounded log storage array writes; mutation observer observes entire subtree without scope boundaries.
+
+### 7. [background.js](file:///home/karan/Desktop/zen/wab_ext/tmp/newshytt1/files/background.js)
+- **Purpose**: Background service worker.
+- **Confirmed Attributes**:
+  - Installs alarm `storageCleanup` (runs every 24 hours).
+  - Handles runtime message requests `GET_UPDATE_STATUS`, `GET_STORAGE_INFO`, and `CLEAR_OLD_LOGS`.
+  - Implements static `checkBackendForUpdates` returning `{ hasUpdate: false }`.
+- **Architectural Findings**: Completely detached from active batch execution state.
+
+---
+
+# 4. Critical Functional Issues
+
+| Issue Description | Affected File(s) | Impact / Severity | Professional Standard |
+| :--- | :--- | :--- | :--- |
+| **Excessive Delay Enforcements** | `whatsapp.js` | **HIGH**: Every step enforces `waitRandomDelay(20000, 30000)` (20-30s). Processing 1 message takes over 1 minute; 10 messages take ~10 minutes. | Replace arbitrary 20-30s sleeps with dynamic event-driven DOM readiness checks and configurable rate limiting (e.g., 2-5s). |
+| **Selector Fragility** | `whatsapp.js` | **HIGH**: Relies on specific DOM selectors (e.g., `div[data-testid="conversation-compose-box-input"]`, `span[data-icon="send"]`). Any WhatsApp Web UI update breaks sending. | Abstract selector definitions into a centralized versioned selector registry with fallback strategy. |
+| **Stale Compose Box Fallback Query** | `whatsapp.js` (line 380) | **MEDIUM**: `handleWhatsAppMessage` calls `document.querySelector('div[contenteditable="true"]')` as fallback. If search box remains present, it may return the search box instead of the compose input. | Query specifically within conversation panel containers or retain element reference from `writeMessage`. |
+| **Background Context Invalidation** | `whatsapp.js` | **MEDIUM**: If extension is reloaded/updated during execution, `chrome.runtime.id` becomes undefined, throwing unhandled context invalidation errors on message passing. | Wrap all extension API calls with runtime context validation guards (`if (!chrome.runtime?.id)`). |
+
+---
+
+# 5. Communication & Content-Script Analysis
+
+### Communication Flow Matrix
+- **Popup ➔ Content Script**: Uses `chrome.tabs.sendMessage(tabId, { action: 'SEND_MESSAGE_BATCH', ... })`.
+- **Content Script ➔ Popup**: Uses `chrome.runtime.sendMessage({ action: 'WAB_STATUS_UPDATE', ... })` to mirror status strings for active Orca screen readers.
+- **Popup ➔ Storage**: Reads `wab_ext_update_status` written by background worker.
+
+### Vulnerabilities Identified
+1. **One-Way Tab Message Lifetime**: `tabs.sendMessage` returns a single promise. For long batch operations, the response remains pending until the entire batch finishes. If the user closes the popup window mid-batch, the channel breaks.
+2. **Missing Port Infrastructure**: The project uses one-off messaging (`sendMessage`) rather than persistent long-lived connections (`chrome.runtime.connect`).
+
+---
+
+# 6. WhatsApp Automation Analysis
+
+### Automation Step Trace
+1. **Open Chat (`openWhatsAppChat`)**:
+   - Queries New Chat button (`button[aria-label="New chat"]`, etc.) via `waitForElement(selectors, 15000)`.
+   - Waits `waitRandomDelay(20000, 30000)`.
+   - Clicks button, queries search box, types phone number via `changeReactInputState` or `document.execCommand('insertText')`.
+   - Presses `Enter` key via `KeyboardEvent`.
+2. **Write Message (`writeMessage`)**:
+   - Queries compose box (`div[data-testid="conversation-compose-box-input"]`, etc.) via `waitForElement(selectors, 15000)`.
+   - Waits `waitRandomDelay(20000, 30000)`.
+   - Inserts text via `document.execCommand('insertText', false, message)`.
+3. **Send Message (`sendMessage`)**:
+   - Queries send button (`button[aria-label="Send"]`, `span[data-icon="send"]`) via `waitForElement(selectors, 4000)`.
+   - If missing, dispatches `Enter` key event on compose box.
+
+### Fragile Assumptions
+- Assumes pressing `Enter` in search input immediately opens the chat without handling invalid phone number modal popups ("Phone number shared via url is invalid").
+- Assumes single-page app (SPA) transition is complete as soon as compose box appears, without checking if message history has finished rendering.
+
+---
+
+# 7. Accessibility Audit
+
+### Standard Compliance & Architecture
+- **Semantic Structure**: `<main role="main">`, `<label>` associated with `<input>` and `<textarea>`.
+- **Live Regions**: Employs double-region alternating technique for both polite (`#status-announcer`, `#status-announcer-2`) and assertive (`#update-announcer`, `#update-announcer-2`) priorities.
+- **Focus Management**: Focuses `#phone` input field on popup load after 200ms delay to allow screen reader initialization.
+
+### Screen Reader & Browser Matrix Behavior
+- **Chrome + NVDA / JAWS**: Live regions update cleanly when text content changes.
+- **Firefox + Orca (Linux)**: Orca suppresses live region announcements from background/unfocused browser tabs. The codebase solves this by actively mirroring status messages from content script (`whatsapp.js`) back to the focused popup (`popup.js`) via `WAB_STATUS_UPDATE`.
+
+---
+
+# 8. Screen-Reader Spoken UX Audit
+
+### Evaluated Spoken Flow
+
+| Trigger Event | Current Spoken Text | Spoken UX Assessment | Recommendation |
+| :--- | :--- | :--- | :--- |
+| **Popup Initialization** | *"WhatsApp message sender is ready."* followed by input label & instructions. | **Good**: Clear context statement. | Retain current implementation. |
+| **Start Sending** | *"Sending X messages. Please wait."* | **Good**: Informative and polite. | Retain current implementation. |
+| **Progress Update** | *"Sending 1 messages. Please wait."* | **Minor Flaw**: "1 messages" grammar issue in certain state paths. | Use singular "1 message" vs plural "X messages". |
+| **Batch Completion** | *"All X messages have been sent successfully."* | **Excellent**: Clear completion signal. | Retain current implementation. |
+| **Partial Failure** | *"Message sending completed. X of Y messages were sent successfully. Z failed."* | **Good**: Detailed distinction between success and failure. | Retain current implementation. |
+
+---
+
+# 9. Error Handling
+
+### Current Handling Evaluation
+- Error handling is primarily string-based via `appendLog` and status strings.
+- Errors are logged to `chrome.storage.local` under `wab_ext_logs`.
+- Catch blocks return boolean flags (`{ success: false }`) or fallback objects without error categorization.
+
+### Recommended Error Hierarchy Taxonomy
+```
+ExtensionError
+ ├── InputValidationError (e.g., INVALID_PHONE_FORMAT, EMPTY_MESSAGE)
+ ├── ConnectionError (e.g., TAB_NOT_FOUND, CONTENT_SCRIPT_UNREACHABLE)
+ ├── DOMAutomationError
+ │    ├── NewChatButtonNotFoundError
+ │    ├── SearchInputTimeoutError
+ │    ├── ComposeBoxNotFoundError
+ │    └── SendButtonNotFoundError
+ └── WhatsAppStateError (e.g., PHONE_NOT_ON_WHATSAPP, CHAT_LOAD_FAILED)
+```
+
+---
+
+# 10. State Management
+
+### Current State Model
+State is maintained via scattered global variables across execution contexts:
+- `popup.js`: `updateCheckComplete`, `currentOperationState` (`id`, `state`, `total`, `sent`, `failed`, `message`).
+- `whatsapp.js`: `contentAnnouncerIndex`, `contentLastAnnouncedKey`.
+
+### Recommended State Machine Schema
+```
+                      ┌──────────────┐
+                      │     IDLE     │
+                      └──────┬───────┘
+                             │ INIT_START
+                             ▼
+                      ┌──────────────┐
+                      │ INITIALIZING │
+                      └──────┬───────┘
+                             │ INIT_SUCCESS
+                             ▼
+                      ┌──────────────┐
+                      │    READY     │
+                      └──────┬───────┘
+                             │ SEND_CLICKED
+                             ▼
+                      ┌──────────────┐
+                      │   SENDING    │◄───────┐
+                      └──────┬───────┘        │
+                             │                │ NEXT_RECIPIENT
+                             ├─── BATCH_COMPLETE ──┐
+                             ▼                │
+                    ┌─────────────────┐       │
+                    │ SINGLE_COMPLETE ├───────┘
+                    └────────┬────────┘
+                             ▼
+     ┌───────────────────────┼───────────────────────┐
+     ▼                       ▼                       ▼
+┌─────────┐             ┌─────────┐             ┌─────────┐
+│ SUCCESS │             │ PARTIAL │             │  ERROR  │
+└─────────┘             └─────────┘             └─────────┘
+```
+
+---
+
+# 11. Async / Concurrency
+
+- **Sequential Processing**: Batch sending loops sequentially (`while (i < phones.length)`). This is appropriate for WhatsApp Web to prevent spam detection, but lacks cancel/pause hooks.
+- **Unbounded Promises**: `waitForElement` uses `setTimeout` fallback (15000ms). If multiple elements wait concurrently, memory leaks could occur if observers fail to disconnect.
+
+---
+
+# 12. Security & Privacy
+
+### Findings
+1. **PII Storage Exposure**: `appendLog` writes unmasked phone numbers and message strings directly into `chrome.storage.local` (`wab_ext_logs`). Any extension with `storage` permission or devtools can inspect recipient phone numbers and message content.
+2. **Permissions Scope**: Appropriately restricted to `activeTab`, `storage`, `scripting`, `alarms`, and `https://web.whatsapp.com/*`.
+3. **DOM Injection**: Uses `document.execCommand('insertText')` and `textContent`. Avoids dangerous `innerHTML` or `eval()` constructs.
+
+---
+
+# 13. Performance
+
+- **Storage Calculation**: `getStorageUsage()` calls `JSON.stringify(allItems)` on every log event. For large storage datasets, this introduces high CPU overhead.
+- **MutationObserver Scope**: `waitForElement` attaches observer to `document.body` with `{ childList: true, subtree: true }`. In complex web apps like WhatsApp Web, this triggers thousands of mutation callbacks per second during chat loading.
+
+---
+
+# 14. Scalability
+
+- **1 Recipient**: ~1–2 minutes (due to fixed 20–30s delays).
+- **10 Recipients**: ~10–15 minutes.
+- **100 Recipients**: ~2–3 hours. Unviable for large batches due to browser memory limits, service worker suspension, and risk of tab crashes.
+
+---
+
+# 15. Browser Compatibility
+
+- **Chromium (Chrome, Edge, Brave)**: Complies with MV3 service worker specification (`"service_worker": "background.js"`).
+- **Firefox**: Configured with Gecko settings (`wab-ext@local.dev`, `strict_min_version: "109.0"`). Handles cross-browser extension API references via `typeof browser !== 'undefined' ? browser : chrome`.
+
+---
+
+# 16. Testing Strategy
+
+### Proposed Test Matrix
+
+```
+┌───────────────────┬───────────────────┬────────────────────┬────────────────────┐
+│ Test Level        │ Scope             │ Target Tools       │ Key Coverage       │
+├───────────────────┼───────────────────┼────────────────────┼────────────────────┤
+│ Unit Tests        │ Logic utilities   │ Jest / Vitest      │ Phone parsing, log │
+│                   │                   │                    │ retention filtering│
+├───────────────────┼───────────────────┼────────────────────┼────────────────────┤
+│ Integration Tests │ Messaging layer   │ Extension Mocking  │ PING handshake,    │
+│                   │                   │ API                │ status mirroring   │
+├───────────────────┼───────────────────┼────────────────────┼────────────────────┤
+│ E2E Browser Tests │ Full DOM Flow     │ Playwright /       │ Chat open, typing, │
+│                   │                   │ Puppeteer          │ send execution     │
+├───────────────────┼───────────────────┼────────────────────┼────────────────────┤
+│ Screen Reader     │ Spoken UX         │ NVDA / Orca        │ Live region        │
+│ Manual Matrix     │ Accessibility     │ Manual Audit       │ announcements      │
+└───────────────────┴───────────────────┴────────────────────┴────────────────────┘
+```
+
+---
+
+# 17. Logging & Diagnostics
+
+- **Current System**: Console logs + local storage array `wab_ext_logs` (max 1000 entries, 7-day cleanup).
+- **Professional Standard**: Introduce structured JSON log entries with log levels (`DEBUG`, `INFO`, `WARN`, `ERROR`), operation IDs, and PII masking for phone numbers (`949****265`).
+
+---
+
+# 18. Maintainability
+
+- **Current Organization**: Single flat folder (`files/`).
+- **Target Organization**:
+```
+src/
+  manifest.json
+  background/
+    index.js
+  content/
+    whatsapp.js
+    selectors.js
+  popup/
+    popup.html
+    popup.js
+    popup.css
+  shared/
+    utils.js
+    messaging.js
+    constants.js
+```
+
+---
+
+# 19. Current vs Professional Target
+
+| Dimension | Current Implementation | Professional Production Target |
+| :--- | :--- | :--- |
+| **Architecture** | Popup-driven, passive service worker | Background-driven state machine with persistent runtime ports |
+| **DOM Automation** | Fixed 20-30s sleeps, hardcoded selector lists | Dynamic element observation, rate limiting, versioned selector registry |
+| **Accessibility** | Dual alternating live regions, manual status mirroring | Centralized accessibility manager with multi-screen-reader test suite |
+| **Error Handling** | Boolean status results, string logs | Custom Error taxonomy with automated recovery paths |
+| **Security & Privacy** | Raw PII logged in chrome.storage | Sanitized logging, masked PII, encrypted operational storage |
+| **Testing** | Manual testing | Automated Unit, Integration, and E2E Playwright test suites |
+
+---
+
+# 20. Risk Register
+
+| Issue | Category | Severity | Likelihood | Impact | Current Handling | Recommended Direction |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **WhatsApp Selector Changes** | Automation | High | High | High | Selector array list fallback | Abstract selectors into configurable registry |
+| **PII Data Exposure in Logs** | Security | High | High | Medium | Plaintext storage | Mask phone numbers & messages before logging |
+| **Service Worker Termination** | Architecture | Medium | High | High | Unhandled | Move batch state machine into background worker |
+| **Excessive Execution Delays** | UX | High | High | High | Fixed 20-30s sleeps | Implement event-driven DOM readiness waits |
+
+---
+
+# 21. Quick Wins vs Architectural Changes
+
+### Low-Risk / Quick Wins
+1. **Reduce Arbitrary Delays**: Replace `waitRandomDelay(20000, 30000)` with realistic rates (e.g., 2000-5000ms).
+2. **PII Masking**: Sanitize phone numbers in `appendLog` (`949*****65`).
+3. **Fix Singular/Plural Grammar**: Update status string templates to handle `1 message` vs `N messages`.
+4. **Targeted MutationObserver**: Scope `waitForElement` observers to specific parent containers instead of `document.body`.
+
+### Architectural / Deep Changes
+1. **Background Service Worker State Engine**: Shift execution ownership from popup to background service worker.
+2. **Long-Lived Runtime Ports**: Replace `tabs.sendMessage` with `chrome.runtime.connect` for persistent batch monitoring.
+3. **Selector Versioning Registry**: Build an abstraction layer for WhatsApp Web DOM selectors to streamline updates.
+
+---
+
+# 22. Development Roadmap
+
+```
+Phase 0: Critical Fixes ➔ Phase 1: Architecture ➔ Phase 2: Reliability ➔ Phase 3: Privacy & Security ➔ Phase 4: Production Hardening
+```
+
+- **Phase 0 — Critical Fixes**: Optimize delay constants; fix compose box selector fallback.
+- **Phase 1 — Architecture**: Move batch orchestration to background service worker; establish `chrome.runtime.connect` ports.
+- **Phase 2 — Reliability**: Build DOM selector registry with failure fallback strategies.
+- **Phase 3 — Privacy & Security**: Implement PII masking in storage logs; refine data retention rules.
+- **Phase 4 — Production Hardening**: Set up Playwright E2E automation tests; build production build pipeline.
+
+---
+
+# 23. What Should Be Preserved
+
+1. **Dual Alternating Live Region Pattern**: The alternating index technique in `popup.js` and `whatsapp.js` correctly forces AT re-announcement of identical sequential messages.
+2. **Cross-Window Status Mirroring**: The `WAB_STATUS_UPDATE` message loop ensures Linux Orca users receive status updates even when window focus remains on the popup.
+3. **Initial Focus Management**: The 200ms delayed focus to `#phone` ensures screen readers announce the ready state before reading input field labels.
+4. **Scoped Permission Schema**: Minimal manifest permissions (`activeTab`, `storage`, `scripting`, `alarms`, `https://web.whatsapp.com/*`).
+
+---
+
+# 24. Final Assessment
+
+1. **What is currently working?**
+   - End-to-end messaging automation flow, screen-reader live region announcements, tab injection readiness checks (`PING`), and storage cleanup alarms.
+2. **What is currently fragile?**
+   - Hardcoded CSS selectors for WhatsApp Web elements and reliance on fixed 20-30s sleeps.
+3. **What is technically incorrect?**
+   - Broad `document.body` MutationObserver scoping and unbounded `JSON.stringify` calls on full storage objects during log appends.
+4. **What is architecturally weak?**
+   - Popup-driven execution model which breaks status reporting if the popup closes during a batch operation.
+5. **What is already well designed?**
+   - Accessibility live-region architecture and cross-browser API abstraction.
+6. **What would prevent production-quality reliability?**
+   - WhatsApp DOM changes causing selector failures without structured fallback handling.
+7. **What would prevent production-quality accessibility?**
+   - Unhandled edge cases in screen reader verbosity during partial batch failures.
+8. **What would prevent long-term maintainability?**
+   - Flat directory layout and duplicated utility logic across files.
+9. **What should be preserved?**
+   - Dual live region alternation logic, initial popup focus management, and minimal permission scoping.
+10. **What should eventually be redesigned?**
+    - State management architecture (moving batch execution to background worker) and selector registry.
+11. **What should NOT be changed unnecessarily?**
+    - The HTML/CSS layout structure and the core screen-reader announcement timing logic.

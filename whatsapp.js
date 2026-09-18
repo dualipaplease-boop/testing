@@ -145,7 +145,7 @@ async function openWhatsAppChat(phoneNumber) {
             await waitRandomDelay(20_000, 30_000);
             actualButton.click();
             appendLog('Clicked new chat button');
-            return true;
+            break; // Continue to the search logic below instead of exiting
         }
 
         if (attempt === 0) {
@@ -206,7 +206,7 @@ async function writeMessage(message) {
         'div[contenteditable="true"][data-tab="10"]'
     ];
 
-    const box = await waitForElement(composeSelectors, 6000);
+    const box = await waitForElement(composeSelectors, 15000);
 
     if (!box) {
         logError('Message box not found. Chat did not load.', 'Missing compose box');
@@ -402,6 +402,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             appendLog(`Sending batch response: sent=${result.sent}, failed=${result.failed}`);
             sendResponse(result);
         });
+        return true;
+    }
+
+    if (request.action === 'PING') {
+        sendResponse({ ready: true });
         return true;
     }
 

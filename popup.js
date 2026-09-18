@@ -34,16 +34,20 @@ function announceStatus(state) {
     
     if (state.state === 'sending') {
         const total = state.total || 0;
-        message = `Sending ${total} message(s)... Please wait.`;
+        const word = total === 1 ? 'message' : 'messages';
+        message = `Sending ${total} ${word}. Please wait.`;
         color = 'blue';
     } else if (state.state === 'success') {
-        message = `All messages have been sent successfully. Extension is ready to use.`;
+        const count = state.sent || state.total || 0;
+        const word = count === 1 ? 'message was' : 'messages were';
+        message = `Sending complete. All ${count} ${word} sent successfully.`;
         color = 'green';
     } else if (state.state === 'partial') {
-        message = `Message sending completed. ${state.sent} sent successfully, ${state.failed} failed.`;
+        const sentWord = state.sent === 1 ? 'message was' : 'messages were';
+        message = `Sending complete. ${state.sent} ${sentWord} sent successfully. ${state.failed} failed.`;
         color = 'orange';
     } else if (state.state === 'error') {
-        message = state.message || `Message sending failed. No messages were sent.`;
+        message = state.message || 'Sending failed. No messages were sent.';
         color = 'red';
     } else if (state.state === 'idle') {
         message = state.message || 'Ready.';
@@ -98,7 +102,7 @@ async function checkForUpdatesOnLoad() {
             currentOperationState = {
                 id: Date.now(),
                 state: 'info',
-                message: `📢 Update Available: ${status.message}. Please update the extension and restart.`,
+                message: `Update available${status.message ? ': ' + status.message : ''}. Please update the extension and restart.`,
                 color: 'orange'
             };
             announceStatus(currentOperationState);
@@ -117,7 +121,7 @@ async function checkForUpdatesOnLoad() {
             currentOperationState = {
                 id: 'idle_' + Date.now(),
                 state: 'idle',
-                message: '✓ All messages synced. Extension ready.'
+                message: 'WhatsApp message sender is ready.'
             };
             announceStatus(currentOperationState);
             
@@ -128,7 +132,7 @@ async function checkForUpdatesOnLoad() {
         console.error('Error checking updates:', error);
         appendLog(`Update check error: ${error.message}`);
         // Continue anyway if update check fails
-        currentOperationState = { id: Date.now(), state: 'info', message: 'Ready (update check skipped)', color: 'blue' };
+        currentOperationState = { id: Date.now(), state: 'idle', message: 'WhatsApp message sender is ready.' };
         announceStatus(currentOperationState);
         return true;
     }
@@ -151,6 +155,15 @@ async function initializePopup() {
         }
         pendingMessages = [];
     }
+
+    // Focus the phone input after the ready announcement has been queued,
+    // so the screen reader announces the ready message first, then the input.
+    if (canProceed) {
+        setTimeout(() => {
+            const phoneInput = document.getElementById('phone');
+            if (phoneInput) phoneInput.focus();
+        }, 200);
+    }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -172,14 +185,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Only allow sending if update check is complete and no updates pending
             if (!updateCheckComplete) {
-                updateStatus('Please wait for update check to complete...', 'blue');
+                updateStatus('Please wait while the extension initializes.', 'blue');
                 return;
             }
             
             // Check one more time before sending
             const status = await getUpdateStatus();
             if (status.hasUpdate) {
-                updateStatus('Cannot send: Extension update required. Please update and restart.', 'red');
+                updateStatus('An extension update is required. Please update and restart before sending.', 'red');
                 return;
             }
             
@@ -189,34 +202,27 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 /**
- * Attempt to re-inject whatsapp.js content script into the active tab.
- * Returns true if injection was successful (tab needs reload/retry).
+ * Ensure content scripts are injected into the active tab.
+ * Uses MV3 scripting.executeScript instead of the deprecated tabs.executeScript.
  */
-async function attemptContentScriptReInjection() {
+async function ensureContentScriptInjected(tabId) {
     try {
         const api = typeof browser !== 'undefined' ? browser : chrome;
-        const tabs = await api.tabs.query({ active: true, currentWindow: true });
-        const tab = tabs && tabs[0];
         
-        if (!tab?.url?.includes('web.whatsapp.com')) return false;
-        
-        // Inject utility and content scripts into the tab
-        await api.tabs.executeScript(tab.id, {
-            file: 'utils.js'
+        // Inject utility and content scripts into the tab using MV3 API
+        await api.scripting.executeScript({
+            target: { tabId: tabId },
+            files: ['utils.js']
         });
         
-        await api.tabs.executeScript(tab.id, {
-            file: 'whatsapp.js'
-        });
-        
-        // Send a message to the re-injected content script to initialize
-        await api.tabs.sendMessage(tab.id, {
-            action: 'INJECT_STATUS_ANNOUNCERS'
+        await api.scripting.executeScript({
+            target: { tabId: tabId },
+            files: ['whatsapp.js']
         });
         
         return true;
     } catch (err) {
-        console.error('Content script re-injection error:', err);
+        console.error('Content script injection error:', err);
         return false;
     }
 }
@@ -283,7 +289,7 @@ async function sendMessageFromPopup() {
     const messageInput = document.getElementById('message');
 
     if (!phoneInput || !messageInput) {
-        updateStatus('Error: Inputs missing from popup.', 'red');
+        updateStatus('Unable to find the input fields. Please try reopening the extension.', 'red');
         appendLog('Error: Input elements not found in popup');
         return;
     }
@@ -293,7 +299,7 @@ async function sendMessageFromPopup() {
 
     // 2. Validate inputs
     if (phones.length === 0 || !message) {
-        currentOperationState = { id: Date.now(), state: 'error', message: 'Please enter at least one valid phone number (7-15 digits) and a message.' };
+        currentOperationState = { id: Date.now(), state: 'error', message: 'Please enter at least one valid phone number and a message.' };
         announceStatus(currentOperationState);
         return;
     }
@@ -329,11 +335,33 @@ async function sendMessageFromPopup() {
             return;
         }
 
+        // STEP 3A: Readiness handshake (Ping)
+        let isReady = false;
+        try {
+            const pingResp = await api.tabs.sendMessage(tab.id, { action: 'PING' });
+            if (pingResp && pingResp.ready) isReady = true;
+        } catch (e) {
+            console.log('[DIAG] Ping failed, content script likely missing:', e);
+        }
+
+        // STEP 3B: Inject if not ready (handles pre-existing tabs)
+        if (!isReady) {
+            updateStatus('Connecting to WhatsApp Web...', 'blue');
+            const injected = await ensureContentScriptInjected(tab.id);
+            if (!injected) {
+                currentOperationState = { id: currentOperationState.id, state: 'error', message: 'Unable to connect to WhatsApp Web. Please refresh the tab and try again.' };
+                announceStatus(currentOperationState);
+                return;
+            }
+            // Brief wait for script initialization
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
         console.log('[STATUS TRACE] popup: preparing SEND_MESSAGE_BATCH', {
             phones,
             message
         });
-        // STEP 3: popup sends SEND_MESSAGE_BATCH to content script
+        // STEP 3C: popup sends SEND_MESSAGE_BATCH to content script
         console.log('[DIAG] Step 3: calling tabs.sendMessage SEND_MESSAGE_BATCH to tab', tab.id);
         console.log('[STATUS TRACE] popup: sending SEND_MESSAGE_BATCH');
         const response = await api.tabs.sendMessage(tab.id, {
@@ -355,7 +383,7 @@ async function sendMessageFromPopup() {
             announceStatus(currentOperationState);
             appendLog(`Messages sent successfully: ${response.sent}/${phones.length}`);
         } else {
-            currentOperationState = { id: currentOperationState.id, state: 'error', message: 'Failed to send. Check WhatsApp Web tab.' };
+            currentOperationState = { id: currentOperationState.id, state: 'error', message: 'Unable to send the messages. Please check that WhatsApp Web is open and try again.' };
             announceStatus(currentOperationState);
             appendLog('Message sending failed: No response from content script');
         }
@@ -364,31 +392,7 @@ async function sendMessageFromPopup() {
         console.error('Messaging failed:', error);
         appendLog(`Messaging error: ${error.message}`);
         
-        // 'Receiving end does not exist' means whatsapp.js is not injected.
-        // This happens when WhatsApp Web was open BEFORE the extension was
-        // loaded/reloaded. Content scripts only inject into tabs opened after
-        // the extension is active. Attempt re-injection first.
-        const isNotInjected = error.message?.includes('Receiving end does not exist') ||
-                              error.message?.includes('Could not establish connection');
-        
-        if (isNotInjected) {
-            // Attempt to re-inject content script into active tab
-            attemptContentScriptReInjection().then((success) => {
-                if (success) {
-                    updateStatus('Content script re-injected. Retrying...', 'blue');
-                    setTimeout(() => {
-                        sendMessageFromPopup();
-                    }, 500);
-                    return;
-                }
-            }).catch(err => console.error('Re-injection failed:', err));
-        }
-        
-        const errMsg = isNotInjected
-            ? 'Content script not found. Please refresh the WhatsApp Web tab and try again.'
-            : 'Could not connect to WhatsApp tab. Refresh WhatsApp and try again.';
-        
-        currentOperationState = { id: currentOperationState.id, state: 'error', message: errMsg };
+        currentOperationState = { id: currentOperationState.id, state: 'error', message: 'Unable to reach the WhatsApp tab. Please refresh WhatsApp Web and try again.' };
         announceStatus(currentOperationState);
     }
 }
